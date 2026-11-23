@@ -1,0 +1,6 @@
+{
+  "name": "PulmoScan AI — Connected Respiratory Screening Demo",
+  "description": "Research prototype respiratory acoustic screening console and mobile companion with real-time Wi-Fi & virtual BLE synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

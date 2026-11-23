@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
+}
+
+/* Clinical PDF and Print Stylesheet */
+@media print {
+  @page {
+    size: letter portrait;
+    margin: 12mm 15mm 15mm 15mm;
+  }
+
+  body {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    font-size: 11pt;
+  }
+
+  /* Hide all UI elements, modals, navbars, sidebars during print */
+  header, nav, aside, .no-print, button, input, select, textarea {
+    display: none !important;
+  }
+
+  /* Make sure printable container fills page cleanly */
+  .printable-report {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .force-break {
+    break-before: page;
+    page-break-before: always;
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "/m",
+  "name": "PulmoScan AI Companion",
+  "short_name": "PulmoScan",
+  "description": "Connected respiratory acoustic screening companion and longitudinal health trend tracker.",
+  "start_url": "/m",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0d9488",
+  "background_color": "#f8fafc",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192' width='192' height='192'%3E%3Crect width='192' height='192' rx='36' fill='%230d9488'/%3E%3Cpath d='M96 40c-25 0-46 20-46 45 0 20 12 37 30 43v24h32v-24c18-6 30-23 30-43 0-25-21-45-46-45zm-14 36a8 8 0 1116 0 8 8 0 01-16 0zm28 0a8 8 0 1116 0 8 8 0 01-16 0z' fill='%23ffffff'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512' width='512' height='512'%3E%3Crect width='512' height='512' rx='96' fill='%230d9488'/%3E%3Cpath d='M256 100c-70 0-128 58-128 128 0 58 35 106 86 122v72h84v-72c51-16 86-64 86-122 0-70-58-128-128-128zm-40 100a24 24 0 1148 0 24 24 0 01-48 0zm80 0a24 24 0 1148 0 24 24 0 01-48 0z' fill='%23ffffff'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
