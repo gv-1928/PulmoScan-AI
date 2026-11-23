@@ -1,0 +1,572 @@
+PROJECT TYPE
+This is a WEBSITE: desktop-first, fully responsive, running in the browser. It is a redesign of an existing Google AI Studio web app. Do NOT build an Android, iOS, React Native or Expo app, and do not generate any native mobile project. The "Phone View" and "Phone app" items are in-page UI only.
+
+ROLE
+You are a principal front-end engineer, motion designer and 3D/creative-coding specialist. Build "PulmoScan AI": a flagship-quality single-page React website titled "PulmoScan breathing sound monitor". It is a DEMO that simulates a chest-worn acoustic sensor (ESP32-S3 with a MEMS microphone) plus a phone companion shown inside the page. It captures breathing sound, checks quality, classifies Normal / Wheeze / Crackle, learns a personal baseline, detects persistent abnormal change and shows a plain-language alert.
+
+SCOPE RULE (strict)
+FEATURES: implement ONLY the features below, and ALL of them. No logins, backend, database, payments, chatbot, theme toggle, extra pages or extra functions. Do not change any number, threshold, formula, label or message given here.
+VISUALS: the UI must feel award-level: dark, glassy, cinematic, with real 3D and rich motion. 3D and animation are presentation only. They must never add controls, pages or behavior beyond what is listed, and must never change numbers or logic.
+If reference images are attached (screenshots of the original app, the "The Hardware" exploded diagram), use them for content, structure and the part list. The visual style is defined below, not by the screenshots.
+
+WORKFLOW
+1. Write a short plan, then build in phases:
+   - Phase 1: engine (types, simulation, DSP, BLE, quality gate, classifier, detector, pipeline).
+   - Phase 2: design system, layout, steps 1-6.
+   - Phase 3: Phone View, modals, Quick Tour.
+   - Phase 4: 3D and motion.
+   - Phase 5: QA.
+2. Run the type-check after each phase.
+3. At the end, run the dev server, open the site in the browser and verify every item of the ACCEPTANCE CHECKLIST. Fix what fails.
+
+TECH STACK
+- React 18 + TypeScript (strict) + Vite + Tailwind CSS + lucide-react + framer-motion + three + @react-three/fiber + @react-three/drei + @react-three/postprocessing (light bloom only).
+- Web Audio API, Web Bluetooth, WebSocket/fetch, canvas 2D for waveform, spectrogram and charts, and a module Web Worker for DSP with a synchronous fallback.
+- Fonts via @fontsource: Inter (UI), JetBrains Mono (numbers, labels, UUIDs, chips, axes), Space Grotesk (H1 only).
+- No UI kit. All 3D geometry is procedural; no external model or texture files.
+- The Vite dev server must use port 3000 (the app's messages mention http://localhost:3000).
+
+FILES
+- types/pulmoscan.ts
+- simulation/{rng, audioPresets, longitudinalSim}.ts
+- features/{pipeline, dsp, dsp.worker, useDspWorker}.ts
+- quality-gate/qualityGate.ts
+- classifier/ruleClassifier.ts
+- detector/{hbQcsr, zscore, population}.ts
+- transport/{bleLink, liveReceiver}.ts
+- pages/LiveLabSection.tsx
+- ui/{LiveHardwarePanel, WaveformCanvas, QualityTimeline, ClassifierPanel, BluetoothLinkPanel, DetectorBenchmarkPanel (lazy), PhoneCompanion, UtilityModals, JudgeModeTour}.tsx
+- three/{HeroBreathScene, HardwareExplodedModel}.tsx (both lazy-loaded)
+- App.tsx owns all state.
+
+==================== TYPES & CONSTANTS (types/pulmoscan.ts) ====================
+- PresetId = 'normal' | 'wheeze' | 'crackle' | 'noisy' | 'custom' | 'live-ble' | 'live-wifi'
+- DataOrigin = 'synthetic-demo' | 'uploaded-file' | 'live-bluetooth' | 'live-wifi'
+- enum QualityState { VALID, TRANSPORT_CENSORED, ACQUISITION_CENSORED } (string values equal to the names)
+- enum PhoneStatus { READY = 'Ready for Recording', CALIBRATING = 'Personal Baseline Learning', STABLE = 'Stable', EARLY_WATCH = 'Early Watch', ELEVATED = 'Elevated', CENSORED_TODAY = 'Skipped today' }
+- PhonePhase = 'READY' | 'ANALYZING' | 'RESULT'
+- LinkMode = 'BLE' | 'WIFI_DEV'
+- ScenarioId = 'strong-prodrome' | 'weak-prodrome' | 'informative-censoring'
+- ConsoleStepId = 'input' | 'quality-gate' | 'classifier' | 'sync' | 'detector' | 'alert-gen'
+- UtilityModalId = 'hardware' | 'acceptance' | 'clinical-pdf' | 'phone-app' | 'data-source' | null
+- BlePacket {seq, version, flags, sampleIndex, byteLength, payloadSamples, timestampMs, lost, gapMsAfterPrev}
+- BleLinkConfig {linkMode, mtuBytes: 185 | 244 | 512, packetLossPct (0-20), burstMode, disconnectEvent, autoSend, seed}
+- BleLinkResult {packets, reassembledSamples, sentCount, receivedCount, lostCount, lossPct, maxGapMs, mtuBytes, windowTransportStats[{windowIndex, lossPct, maxGapMs, lostPackets, totalPackets}]}
+- WindowAnalysis {index, startSec, endSec, qualityState, reason, lossPct, maxGapMs, clipPct, noiseFloorDb, contactScore, rms, wheezeProb, crackleProb, normalProb, acousticAnomalyScore}
+- ClassifierOutput {normal, wheeze, crackle, validWindowCount, totalWindowCount, label: 'CNN Classification'}
+- FeatureVector21D {values: number[], labels: string[]}
+- BreathPhaseSpan {startSec, endSec, phase: 'inhale' | 'exhale'}
+- ExplanationTrace {baselineMean, baselineScale, studentTDof, predictiveSurprise, censoringEvidenceTerm, temperingLambda, srStatistic, srThreshold, status, contributingWindows[{index, startSec, endSec, qualityState, contribution, reason}]}
+- SessionAnalysisResult {id, title, presetId, breathsPerMin, durationSec, sampleRate, rawSamples, reassembledSamples, breathPhases, melSpectrogram: number[][], melTimesSec, windows, classifier, featureVector21D, bleResult, trace, dspTimeMs, isSynthetic, dataOrigin?}
+- SessionRecord {id, dayIndex, timestampIso, label, presetId, status, srStatistic, validWindows, transportCensoredWindows, acquisitionCensoredWindows, dominantClass: 'Normal' | 'Wheeze' | 'Crackle', censoredReason?, isSynthetic}
+- DailyDetectorPoint {day, hbQcsr, zScore, population, hbAlert, zAlert, popAlert, censoredType: 'none' | 'transport' | 'acquisition', latentSeverity}
+- BenchmarkRow {detector, falseAlertsPer30Days, detectionDelayDays, sensitivity, notes}
+- BenchmarkSimulationResult {scenario, seed, subjectId, informativeCensoring, tempering, changePointDay, hbThreshold, zThreshold, popThreshold, trajectory, table}
+- PAPER_CONSTANTS (as const): SAMPLE_RATE_HZ 16000, MAX_DURATION_SEC 120, BLE_PACKET_BYTES 244, BLE_HEADER_BYTES 8, BLE_AUDIO_BYTES 236, BLE_SAMPLES_PER_PACKET 118, BLE_PACKET_DURATION_MS 7.375, WINDOW_SEC 3, WINDOW_OVERLAP 0.5, WINDOW_HOP_SEC 1.5, N_FFT 512, FFT_HOP 256, MEL_BANDS 64, TRANSPORT_LOSS_THRESHOLD_PCT 2.0, TRANSPORT_GAP_THRESHOLD_MS 20.0, CALIBRATION_DAYS_TARGET 14, RAW_BITRATE_KBPS 256, SESSION_ENERGY_MAH 3.7, SESSION_COMPUTE_GFLOP 5.1, SESSION_WINDOWS_120S 79, COST_PER_OBS_PULMOSCAN_USD 0.055, COST_DEVICE_USD 60, COST_PER_OBS_STETHOSCOPE_USD 11.11, COST_STETHOSCOPE_USD 400, MATCHED_SENSITIVITY 0.9, COHORT_SUBJECTS 3000, COHORT_DAYS 180, COHORT_SEEDS 5, HB_FALSE_ALERTS_30D 0.09, ZSCORE_FALSE_ALERTS_30D 0.23, POP_FALSE_ALERTS_30D 1.95, INFORMATIVE_CENSORING_REDUCTION_PCT 31, INFORMATIVE_CENSORING_BEFORE 0.153, INFORMATIVE_CENSORING_AFTER 0.106.
+
+==================== VISUAL DESIGN SYSTEM ====================
+Theme: "Deep-sea clinical instrument" (dark, single theme).
+Tokens (CSS variables):
+- --bg #050B10; --bg-2 #08141B; --glass rgba(14,28,36,.62); --glass-strong rgba(18,36,46,.82)
+- --border rgba(148,226,213,.14); --border-strong rgba(148,226,213,.32)
+- --text #E8F3F1; --muted #8AA3A0
+- --accent #2DD4BF (teal); --accent-2 #5EEAD4 (mint); --violet #8B5CF6 (rare glow accents only)
+- Status colors: Stable #34D399; Early Watch #FBBF24; Elevated #FB7185; Skipped/Lost #94A3B8 (hatched); Bad recording #F43F5E (dotted)
+
+Look and feel:
+- Background: layered radial aurora gradients (teal and violet, very low opacity), a faint perspective grid that drifts slowly, and a fixed film-grain overlay (2-3%).
+- Glass: backdrop-blur-xl, a 1px gradient border (brighter on the top-left), an inner top highlight, layered soft shadows, and a subtle teal outer glow on active elements.
+- Radius: 16-20px cards, 12px controls. Max content width 1440px.
+- Type: H1 in Space Grotesk 600 with a subtle teal-to-mint gradient fill. Mono uppercase captions with +0.12em tracking for section tags (e.g. "6. ALERT GENERATION").
+- Instrument canvases (waveform, spectrogram, charts): near-black #040A0E panels, a glowing mint-to-teal trace (canvas shadowBlur), a faint grid and a subtle scanline.
+- Print CSS: when printing the Session report, switch to a clean white/black layout and hide every ".no-print" element (disclaimer, header, toolbar, footer, tour, 3D canvases).
+
+==================== MOTION & 3D (visual only) ====================
+Global rules: target 60 fps; framer-motion springs (stiffness ~260, damping ~28); durations 180-450 ms. Everything respects prefers-reduced-motion (disable parallax, particles, tilt and autoplay loops; keep simple fades). Pause all rAF/WebGL work when the tab is hidden or the canvas is off-screen. Cap DPR at 2.
+
+1) Hero 3D scene (HeroBreathScene, lazy)
+- A fixed full-bleed r3f canvas BEHIND the title block, pointer-events none. Use a CSS aurora fallback if WebGL is unavailable or reduced motion is on.
+- A volumetric particle "breathing lung": about 6-9k instanced points forming two soft lobes plus a faint bronchial-tree filament structure. It expands on inhale and contracts on exhale using the loaded session's breathPhases and breathsPerMin (cycle = 60/bpm; inhale 40%, pause 6%, exhale 46%), eased with a smooth sine.
+- During Play, drive the phase from the actual playhead time. When idle, loop at the current bpm.
+- Reacts to analysis:
+  - Tint teal for Stable, amber for Early Watch, coral for Elevated, slate for Skipped today.
+  - A wheeze-dominant classifier adds a thin high-frequency shimmer ripple along the lobes.
+  - A crackle-dominant classifier adds brief spark flashes on inhale.
+  - Intensity scales with the classifier probability (cosmetic only).
+- Gentle mouse parallax (camera drift ±4°), slow idle rotation, light bloom and fog depth. It fades out as the user scrolls past the title block.
+
+2) Sensor 3D (HardwareExplodedModel, lazy, shown in the Sensor modal)
+- An interactive exploded view of the wearable, built procedurally, matching the reference image "The Hardware": a soft light-blue/grey studio background with white and grey parts, and the large heading "The Hardware" over the scene.
+- Parts from top to bottom, with EXACTLY these callout labels:
+  - "Soft-touch, ergonomic TPU contact ring" (soft blue-grey, slightly wavy lofted ring)
+  - "High-tension diaphragm membrane" (thin translucent disc)
+  - "3D-printed PETG housing" (white truncated-cone shell)
+  - "Precision MEMS microphone mount" (small disc board with a black mic port and a small cylinder)
+  - "ESP32-S3 PCB" (dark green board with tiny chip boxes and a small LiPo cell)
+  - "USB-C Charging Port" (small rounded metal box on the PCB edge)
+  - "Modular base cover" (rounded light-grey disc with subtle vent texture)
+- Behavior:
+  - On open, parts animate from assembled to exploded with staggered springs.
+  - Drag to orbit (damped, limited polar angle); slow auto-rotate that stops on interaction.
+  - Hovering a part lifts and highlights it and emphasizes its label.
+  - Labels are HTML callouts (drei Html) with thin leader lines, always legible, without overlap.
+  - Soft studio lighting with an environment preset and a contact shadow.
+  - If WebGL fails, show a plain labeled list of the seven parts.
+  - No controls beyond drag and hover.
+
+3) Tilt/parallax: the Phone View frame has a physical 3D tilt (rotateX/Y ±6°) following the pointer, with a moving specular glare and a gentle float. It lies flat on touch devices.
+
+4) Micro-interactions:
+- Magnetic hover on primary buttons; ripple on press; cards lift with a glow on hover.
+- The step-rail active indicator slides between items (shared layoutId).
+- Stage content cross-fades and slides with AnimatePresence (mode "wait"); lists stagger in.
+- Numbers count up/down (Live numbers, scores, percentages).
+- The phone's circular ring animates with a spring and a glowing leading dot.
+- The waveform draws in left to right on load; the spectrogram reveals column by column.
+- Chart lines draw with a stroke-dash animation and the change-day line drops in.
+- Clip chips pop in with a stagger and pulse once when selected.
+- The LED pulses while "Sending"; shimmer skeletons for lazy panels; a progress sweep while processing.
+- Modals open/close with scale+blur, and the tab pill slides between tabs.
+- The Quick Tour dims the page and spotlights the active region with a soft glow.
+
+5) Sound-reactive accents: while Play is active, a thin glow on the header border and the waveform frame pulses with the current RMS (cosmetic only).
+
+6) Performance:
+- Lazy-load the three bundles (hero when in view; sensor model when the Sensor modal opens).
+- Use instancing and dispose geometries and materials on unmount.
+- Use 3k particles when navigator.hardwareConcurrency <= 4.
+- The initial bundle must not include three.
+
+==================== GLOBAL LAYOUT ====================
+1. Disclaimer bar (centered, 11px, glass): "Demo only. Not a medical device. Not for diagnosis."
+2. Sticky floating header (glass, blur, rounded, offset from the top), 3 zones:
+   - Left: wordmark "PulmoScan AI" (animated gradient on hover). Click: exit standalone phone view, close modals, return to the console.
+   - Center nav: Home | Abnormality Detection | Sensor | Self-check.
+     - Home: step "input"; active when step != "detector" and no modal is open.
+     - Abnormality Detection: step "detector".
+     - Sensor: opens modal "hardware".
+     - Self-check: opens modal "acceptance".
+     - The active item is teal and semibold with a sliding underline glow.
+     - Hidden on mobile and replaced by a menu button opening an animated sheet with the same four items.
+   - Right: primary glowing gradient button with a PlayCircle icon, "Quick tour".
+3. Title block (over the hero 3D): H1 "PulmoScan breathing sound monitor" plus one muted line, exact text:
+   "1. Audio Acquisition: Captures respiratory sounds using a microphone. → 2. Quality Checking: Checks audio clarity, noise and packet loss. → 3. CNN Classification: Identifies Normal, Wheeze and Crackle sounds. → 4. Personal Baseline Learning: Learns the user's normal respiratory pattern. → 5. Abnormality Detection: Detects unusual and persistent changes in breathing patterns. → 6. Alert Generation: Displays status and recording recommendations."
+4. Toolbar card (glass, wraps):
+   - Left: LED dot + mono "Sensor: <state>".
+     - Disconnected (red) when bleConfig.disconnectEvent.
+     - Sending (red, pulsing) when phonePhase is ANALYZING or isProcessingAudio.
+     - Ready (teal) when phonePhase is RESULT.
+     - Idle (grey) otherwise.
+     - Then a battery icon + "Demo", or the live battery % if a live sensor reported one.
+     - Then a segmented control [Bluetooth | Wi-Fi (dev)] with radio/wifi icons and a sliding pill. Bluetooth is always the default.
+   - Right buttons:
+     - "Load wheeze sample" (primary, Activity icon)
+     - "Quick tour"
+     - "Self-check" (CheckSquare)
+     - "Session report" (FileText, opens clinical-pdf)
+     - "Phone app" (Layers, opens phone-app)
+     - "Data source" (Database)
+     - "Hide Phone" / "Show Phone" (Smartphone, xl screens only)
+     - "Phone" (teal outline, below xl; opens the phone drawer)
+5. Main grid (xl: 12 cols): console 8 cols (12 when the phone is hidden), phone 4 cols (sticky, top-20). Inside the console: step rail 3 cols, stage card 9 cols. Below xl: the rail becomes a 2-3 column grid above the stage, and the phone opens as a centered drawer (max-w 390px) with a "Close Phone" button.
+6. Footer (glass): "PulmoScan AI · Demo only · Works on your phone · Not a medical device."
+
+STEP RAIL (6 buttons: icon, title, subtitle; active = glowing teal border; truncate long text)
+1. Audio Acquisition (Upload) "Microphone & sound" — id input
+2. Quality Checking (ShieldAlert) "Clarity, noise & loss" — id quality-gate
+3. CNN Classification (BrainCircuit) "Normal, Wheeze, Crackle" — id classifier
+4. Personal Baseline Learning (Radio) "Bluetooth & normal pattern" — id sync
+5. Abnormality Detection (LineChart) "Persistent changes" — id detector
+6. Alert Generation (BellRing) "Status & advice" — id alert-gen
+Below the rail (desktop only), a "Live numbers" mono card:
+- Processing time: "{dspTimeMs.toFixed(1)} ms"
+- Clips: "{valid}G / {transport}L / {acq}B"
+- Alert score: "{sr.toFixed(2)} / {threshold.toFixed(1)}" (teal, semibold)
+Values count-animate when they change.
+
+==================== STEP 1: AUDIO ACQUISITION ====================
+Heading "1. Audio Acquisition" plus a mono badge from analysis.dataOrigin: "Demo math audio" | "Uploaded audio file" | "Live Bluetooth audio" | "Live Wi-Fi audio".
+Subtext: "Captures respiratory sounds using a live Bluetooth/Wi-Fi sensor, a demo sample, or your own sound file."
+
+A) LiveHardwarePanel: "Connect Live Sensor (Bluetooth or Wi-Fi)"
+Subtext: "Receive real 16 kHz audio from your chest sensor or local bridge and run all 6 checks on it."
+- Tabs: Bluetooth LE | Wi-Fi Stream (animated pill).
+- If Web Bluetooth is unavailable or the context is insecure, show an inline notice using the messages below.
+- BLE tab:
+  - Mono inputs "BLE Audio Service UUID" (default 6e400001-b5a3-f393-e0a9-e50e24dcca9e) and "Audio Notify Characteristic UUID" (default 6e400003-b5a3-f393-e0a9-e50e24dcca9e).
+  - Checkbox "Show all nearby BLE devices": acceptAllDevices true with optionalServices [serviceUuid, 'battery_service']; otherwise filters [{services:[serviceUuid]}] with optionalServices ['battery_service'].
+  - Select packet format: "Auto-detect packet" (auto) | PulmoScan 244-byte (pulmoscan-244) | Raw PCM16 (raw-pcm16).
+  - Select clip length (default "12s clip").
+  - Primary button "Pair & Receive Sound" (Bluetooth icon).
+  - Flow: requestDevice → gatt.connect → try battery_service/battery_level (null on failure) → getPrimaryService + getCharacteristic → startNotifications → listen to characteristicvaluechanged.
+  - On gattserverdisconnected: finish if >= 3 s is buffered, else error "Bluetooth sensor disconnected before receiving 3 seconds of audio."
+  - Auto-finish when buffered samples reach the target (minimum 3 s).
+- Wi-Fi tab:
+  - WebSocket URL input (placeholder ws://192.168.4.1:81/audio) with a "Receive" button.
+  - Optional HTTP audio URL (placeholder http://192.168.4.1/latest.wav), fetched with CORS. Paths ending .pcm/.raw are raw 16 kHz Int16 LE; other types go through decodeAndResampleArrayBuffer.
+  - Clip length and packet format selects.
+  - WebSocket messages may be binary (ArrayBuffer/Blob) or JSON {packetBase64 | pcm16Base64}; ignore other strings.
+- Exact messages:
+  - "Enter a valid WebSocket address, for example ws://192.168.4.1:81/audio or wss://your-host/audio."
+  - "WebSocket address must start with ws:// or wss://."
+  - "This page is loaded over HTTPS, so the browser blocks unencrypted ws:// links. Use a wss:// address (for example via a local TLS tunnel) or run the app locally on http://localhost:3000."
+  - "Enter a valid Wi-Fi audio address, for example http://192.168.4.1/latest.wav."
+  - "Audio URL must start with http:// or https://."
+  - "This page is loaded over HTTPS, so the browser blocks plain http:// fetches to local devices. Use an https:// endpoint or run locally on http://localhost:3000."
+  - "Could not connect to <url>. Check that your sensor/bridge WebSocket server is running on the same network."
+  - "Wi-Fi audio stream hit a network error."
+  - "Wi-Fi connection closed before receiving 3 seconds of sound."
+  - "Device returned HTTP <code> (<statusText or 'error'>)."
+  - "The Wi-Fi endpoint returned an empty audio response." (byteLength < 64)
+- Bluetooth error mapping:
+  - Message contains "disallowed" or "permissions policy": "Bluetooth access is blocked inside an embedded preview frame. Open this app directly in Chrome or Edge on https:// or http://localhost:3000 to pair your sensor."
+  - Contains "user cancelled" or "canceled": "Bluetooth pairing was cancelled before selecting a device."
+  - Contains "gatt", "service" or "characteristic": "Connected to the Bluetooth device, but could not find the audio service/characteristic UUID. Check the Service UUID and Audio Notify UUID fields. (<msg>)"
+  - Otherwise: "Bluetooth connection failed: <msg>"
+  - Unsupported browser: "Web Bluetooth is not available in this browser. Use desktop Chrome, Edge, or Android Chrome over HTTPS or localhost."
+- Live progress block while capturing: device name, battery %, received packets, lost packets, buffered s / target s, an animated live RMS meter, and "Stop & finish" and "Cancel" buttons.
+- Packet accumulator (liveReceiver.ts):
+  - The Pulmo header is used when the format is pulmoscan-244 and byteLength >= 10, or when auto and (byteLength == 244 or (byteLength >= 10 and byte0 == 1 and (byteLength-8) is even)). Header = version u8, flags u8, seq u16 LE, sampleIndex u32 LE, followed by Int16 LE PCM. Otherwise the whole packet is PCM16 LE.
+  - A seq delta in 2..499 means missed = delta-1 packets: append silence, push lost packet records (flags 0x04), add to lostCount, update maxGapMs.
+  - Compute the RMS of each packet for the meter.
+  - finalize(): pad to >= 3 s; build windowTransportStats for 3 s windows at a 1.5 s hop; build estimated breath phases (2.0 s step, 1.65 s long, alternating inhale/exhale); the title is "<device> (Bluetooth)" or "<device> stream"; return {samples, breathPhases, durationSec, title, bleResult, deviceName, batteryPct}.
+  - buildSingleBufferBleResult(samples, flag): a lossless record of 244-byte packets with 118 samples each.
+- On completion, App does the following:
+  - Sets linkMode (BLE or WIFI_DEV) and disconnectEvent to false.
+  - Sets the preset to live-ble or live-wifi.
+  - Stores liveCaptureMeta {bleResult, dataOrigin, batteryPct}.
+  - Auto-syncs to the phone.
+
+B) Upload + presets row
+- Dashed drop zone (5 cols): Upload icon, "Drop your audio file here", and a "Choose file" button. Accepts audio/*, .wav, .mp3, .flac, .m4a. Drag-over glows teal. Error (role=alert): "Could not read that sound file. Try a standard audio file."
+- 2×2 preset cards (7 cols), selected = glowing teal border and tint:
+  - "Normal breath" / "Steady quiet breathing"
+  - "Wheeze sound" / "Soft whistle on breath out"
+  - "Crackle sound" / "Short pops on breath in"
+  - "Noisy-Bad" / "Loose fit and room noise"
+
+C) WaveformCanvas (dark instrument panel)
+- Controls:
+  - "Pattern" select (Normal, Wheeze, Crackle, Noisy).
+  - "Breaths / min" slider 10-28 with a mono live value "15/min".
+  - Toggle "Sound wave | Sound map".
+  - "Play" button (play/stop).
+- Title (e.g. "Normal breathing (15/min)") with right-aligned mono meta "12.0 seconds · Standard sound quality".
+- Waveform:
+  - Y axis -1.0 to 1.0; X axis in seconds (0.0s ... 12.0s).
+  - Alternating shaded inhale/exhale bands from breathPhases.
+  - A glowing coral playhead.
+- Legend: Inhale / Exhale, a time readout "0.00s", and a "Scrub" slider.
+- Playback uses a Web Audio buffer at 16 kHz with an animated playhead.
+- "Sound map" = 64-band log-mel heatmap (melSpectrogram × melTimesSec) with a perceptual dark → teal → mint → white colormap and a time axis.
+
+==================== STEP 2: QUALITY CHECKING (QualityTimeline) ====================
+- Heading "2. Quality Checking". Subtext: "Checks audio clarity, noise and packet loss across 3-second clips."
+- Summary row with icons: "Good: 7", "Lost while sending [L]: 0", "Bad recording [B]: 0" (bad in coral).
+- Legend card:
+  - [G] "Good (used for your score)"
+  - Hatched [L] "Lost while sending (Bluetooth drop, safely ignored)"
+  - Dotted rose [B] "Bad recording (noise, clipping, or loose contact)"
+- Row of selectable clip chips (mono): "Clip 1 [G]" … with the state word (Good / Lost / Bad) and the time range. For 12 s audio there are 7 windows: 0.0-3.0s, 1.5-4.5s, 3.0-6.0s, 4.5-7.5s, 6.0-9.0s, 7.5-10.5s, 9.0-12.0s. Default selection: the first non-good clip, else clip 5.
+- Detail panel for the selected chip (e.g. "Clip #5 (6.0-9.0s)"): Lost Data % (e.g. "0.0%"), Longest gap (ms), noise floor (dB), clip %, contact score, RMS, the wheeze/crackle/normal probabilities, and the reason text.
+
+QUALITY GATE (exact, quality-gate/qualityGate.ts)
+For i in 0..min(dsp.windowMetrics.length, ble.windowTransportStats.length)-1: startSec = i·1.5 (2 dp), endSec = start + 3.
+- Default: state VALID, reason "Good chest contact and steady Bluetooth link".
+- Transport check first: lossPct > 2.0 OR maxGapMs > 20.0 → TRANSPORT_CENSORED. Reason "Lost while sending (<gap> ms gap, <loss>% lost)" if the gap > 20, otherwise "Lost while sending (<loss>% missing)".
+- Otherwise, collect acquisition reasons; if any exist → ACQUISITION_CENSORED with reason "Bad recording: <reasons joined by ', '>":
+  - clipPct > 0.5 → "sound clipped (X.X%)"
+  - rms < 0.012 → "too quiet"
+  - noiseFloorDb > -23 → "too much room noise"
+  - contactScore < 0.58 → "loose chest contact (NN%)"
+- Window scores:
+  - wheezeRaw = max(0, (tonalWheezeRatio - 2.4)·0.24)
+  - crackleRaw = max(0, (crackleBurstDensity - 2.8)·0.14)
+  - normalRaw = 0.85; sum = all three
+  - probabilities = raw/sum (3 dp)
+  - acousticAnomalyScore = min(4.5, wheezeProb·3.1 + crackleProb·2.6 + max(0, 1 - normalProb)·1.4) (3 dp)
+- Output per window: {index, startSec, endSec, qualityState, reason, lossPct (2 dp), maxGapMs (1 dp), clipPct (2 dp), noiseFloorDb (1 dp), contactScore (2 dp), rms (4 dp), wheezeProb, crackleProb, normalProb, acousticAnomalyScore}.
+
+==================== STEP 3: CNN CLASSIFICATION (ClassifierPanel; props: classifier, windows) ====================
+- Heading "3. CNN Classification" plus the note "Demo version. Final model runs on the phone."
+- Three large animated probability gauges (Normal / Wheeze / Crackle) with percentages, the dominant class highlighted, and a mono line "Based on {validWindowCount} of {totalWindowCount} good clips".
+- Per-clip stacked horizontal bars (normal/wheeze/crackle) for all windows, each with its state marker ([G]/[L]/[B]). Clips that are not valid are dimmed with their hatch/dot patterns and labeled "not used".
+- ruleClassifier (exact): pool = VALID windows if any, else all windows. Average normalProb/wheezeProb/crackleProb over the pool, normalize by the total (or 1 if zero), 3 dp. Output {normal, wheeze, crackle, validWindowCount, totalWindowCount, label:'CNN Classification'}.
+
+==================== STEP 4: PERSONAL BASELINE LEARNING (BluetoothLinkPanel) ====================
+Props: bleConfig, onChangeConfig, bleResult, rawSamples, windows, srStatistic, srThreshold, onSyncToPhone. Subtitle "Bluetooth & normal pattern".
+- Controls: Link segmented [Bluetooth | Wi-Fi (dev)]; MTU select 185 | 244 | 512 (default 244); Packet loss slider 0-20% (mono value); Burst loss toggle; Disconnect event toggle; Auto-send to phone toggle (default on); Seed number (default 1).
+- Transport stat cards: Sent / Received / Lost packets (e.g. 1628 / 1628 / 0), Loss %, Max gap ms, MTU.
+- Packet strip: packets binned into about 200 cells (teal = received, slate hatched = lost) with 3 s window brackets underneath.
+- Waveform overlay: rawSamples (faint) versus reassembledSamples (mint), with lost gaps shaded.
+- Per-window transport bars (loss % and max gap) with the 2.0% and 20 ms thresholds drawn.
+- Spec note: "Header 8 B + 236 audio B = 118 samples = 7.375 ms per packet · 16 kHz · 16-bit · 256 kbps raw."
+- A "Transport loss never changes the alert score" card showing the current Alert score "X / 6.5". Beside it: a "Sync to phone" button (manual commit) and the baseline progress "X of 14 days" with an animated bar.
+- Baseline rule: +1 for each synced session with >= 1 valid window, capped at 14.
+
+BLE LINK SIMULATOR (exact, transport/bleLink.ts)
+- audioBytes = max(20, mtu - 8); samplesPerPacket = floor(audioBytes/2) (118 at MTU 244); packet duration = samples/16000·1000 ms (7.375).
+- totalPackets = max(1, ceil(len/samplesPerPacket)).
+- RNG seed = seed·7919 + round(lossPct·100) + mtu.
+- lossRate = clamp(lossPct/100, 0, 0.2).
+- Burst mode: enter probability = lossRate·0.28; stay probability 0.72.
+- Disconnect event: packets from floor(total·0.42) for max(4, round(140/packetMs)) packets are lost.
+- Received samples are int16-quantized (round(x·32767)/32767); lost = zeros.
+- Packet flags: 0x04 lost; 0x02 WIFI_DEV; 0x01 BLE. seq = i & 0xffff; version 1; byteLength = mtu; timestampMs = i·packetMs (3 dp).
+- Track maxGapMs (consecutive lost packets × packetMs) and the per-window transport stats (loss %, max gap, lost packets, total packets over the packet range covering each window).
+- Returns {packets, reassembledSamples, sentCount, receivedCount, lostCount, lossPct, maxGapMs, mtuBytes, windowTransportStats}.
+
+==================== STEP 5: ABNORMALITY DETECTION (DetectorBenchmarkPanel, lazy, skeleton fallback) ====================
+- Heading "5. Abnormality Detection" plus a coral-tinted mono badge "Demo data". Subtext: "Detects unusual and persistent changes in breathing patterns over 6 months of demo data. Alert level is scaled to 5.0."
+- "Reset demo" button (restores Clear change, Run 1, #0001, Count bad clips on, 0.35).
+- Controls:
+  - "Scenario" select: Clear change (strong-prodrome) | Slow change (weak-prodrome) | Bad clips rise with illness (informative-censoring)
+  - "Demo run (1–5)": Run 1..5 (= seed)
+  - "Demo person": #0001, #0002, … (= subjectId)
+  - "Quality Checking" toggle button labeled "Count bad clips" (informativeCensoring)
+  - "Bad clip weight" slider 0-1 with a mono value "0.35" (the same tempering state as App; changing it re-runs the pipeline)
+- Chart (canvas/SVG with animated line draw):
+  - The y axis is auto-scaled to the Personal alert peak (e.g. 30.77) with ticks about every 8; x labels D2, D8, D15 … D180 (about every 7th day).
+  - Header "Change starts: Day {changePointDay}" plus a legend: solid teal "Personal alert (peak)", dashed grey "Simple average (peak)", dotted "Fixed cutoff (peak)".
+  - A dashed vertical coral line labeled "Change" and a dotted horizontal coral line labeled "Alert level 5.0".
+  - Display scaling: each series × (5 / its own threshold), so every alert level reads exactly 5.0 (e.g. SR 40 → 30.77).
+- Table "Live numbers from this chart (Demo data)": columns Method | Early alerts before change | First alert after change | How it works. The Personal alert row is highlighted.
+  - Personal alert: "N days" (count of days < changePointDay with hbAlert) | "Day X" (first day >= changePointDay with hbAlert) | "Learns your own normal range first."
+  - Simple average: same with zAlert | "Checks only basic day-to-day ups and downs."
+  - Fixed cutoff: same with popAlert | "Uses one cutoff for everyone."
+- simulateSubject180Days (exact):
+  - RNG seed = seed·104729 + subjectId·7919 + scenario.length·997.
+  - 180 days; changePointDay = 108 + (seed % 5)·4.
+  - personalMean = 0.36 + (subjectId % 7)·0.055; personalScale = 0.17 + (subjectId % 3)·0.02.
+  - Latent severity after the change (e = day - changePointDay, only for day >= changePointDay): strong = min(1, e/14); weak = min(0.54, (e/32)·0.54); informative = min(0.76, e/20).
+  - Censoring: pTransport 0.06; pAcqBase = informative ? 0.08 : 0.04; pAcq = (informative AND toggle on) ? base + severity·0.24 : base. Draw one uniform u: u < pTransport → transport; else u < pTransport + pAcq → acquisition; else none.
+  - Observation (uncensored only) = mean + severity·shift + studentT(6, 0, scale), with shift = 0.34 weak, 0.68 strong, 0.52 informative.
+  - Thresholds: HB 6.5, z-score 2.45, population 2.25. prevSr starts at 0.3 and prevZ at 0.
+  - Per-day record: {day, hbQcsr, zScore, population, hbAlert, zAlert, popAlert, censoredType, latentSeverity (3 dp)}.
+  - Also build the 3-row BenchmarkRow table as in the source (detector names "Personal alert", "Simple average", "Fixed cutoff").
+- Detector steps (exact):
+  - studentTLogDensity(x, loc, scale, dof) = -0.5·(dof+1)·ln(1 + z²/dof) - ln(s), where s = max(1e-4, scale) and z = (x - loc)/s.
+  - stepHbQcsr:
+    - transport → return prevSr unchanged (surprise 0, evidence 0).
+    - acquisition or null observation → rawEta = informative ? 0.52 : 0; tempered = λ·rawEta; next = clamp((0.65 + 0.85·prev)·exp(tempered - 0.14), 0.1, 40).
+    - valid → altMean = mean + 1.65·scale; logH0 at (mean, scale); logH1 at (altMean, 1.12·scale); surprise = clamp(logH1 - logH0, -0.85, 2.6); next = clamp((1 + prev)·exp(0.62·surprise - 0.28), 0.08, 40).
+  - zscore: transport or null → prev·0.85. Otherwise z = (obs - mean)/max(0.08, std); acquisition → z = max(z, 1.35); out = clamp(0.55·prev + 0.45·z, -2, 8).
+  - population (mean 0.42, std 0.22): transport or null → 0; acquisition → obs + 0.45; score = clamp((obs - mean)/std, -1.5, 8).
+
+==================== STEP 6: ALERT GENERATION ====================
+- Heading "6. Alert Generation". Subtext "Displays status and recording recommendations." Top-right "Session report" button (opens clinical-pdf).
+- Three stat cards:
+  - "Current Status": "Ready for Recording" if phonePhase == READY, else trace.status. Below it, mono "Score X / 6.5" (coral for Elevated / Early Watch / Skipped today; teal otherwise).
+  - "Personal Baseline Learning": "X of 14 days" plus "Learns the user's normal respiratory pattern."
+  - "CNN Classification": the dominant class plus "Demo version. Final model runs on the phone." Dominant rule: Wheeze if wheeze >= normal and wheeze >= crackle; else Crackle if crackle >= normal; else Normal.
+- "Recording recommendations" card:
+  - READY: "Select or upload a breathing sound in Audio Acquisition and send it to the phone view."
+  - CENSORED_TODAY: "Check that the TPU contact ring rests flat on the skin, minimize room noise, and repeat the recording."
+  - ELEVATED: "Repeat the recording while resting quietly to see if the change persists."
+  - Otherwise: "Continue daily recordings in a quiet setting to maintain Personal Baseline Learning."
+
+==================== AUDIO MATH (audioPresets.ts; deterministic; 16 kHz; 12 s) ====================
+- RNG: Mulberry32 (state = (seed >>> 0) || 1; t = state += 0x6d2b79f5; t = imul(t ^ (t >>> 15), t | 1); t ^= t + imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296). Box-Muller Gaussian with u1 = max(1e-12, next()). Student-t = z / sqrt(chi²_k / k), k = max(1, round(df)). range(min, max) = min + (max-min)·next().
+- Preset RNG seed = 42 + presetId.length·131 + clampedBpm·17. BPM is clamped to 10-28 (default 15).
+- Cycle = 60/bpm; inhale = 0.40·cycle; pause = 0.06·cycle; exhale starts at inhale + pause and lasts 0.46·cycle. Emit inhale/exhale spans (2 dp, clipped to 12 s).
+- Base signal:
+  - White Gaussian w: b0 = 0.96·b0 + 0.08·w; b1 = 0.88·b1 + 0.22·b0; b2 = 0.72·b2 + 0.35·b1.
+  - Envelope: floor 0.03; inhale 0.24·sin(π·pos/inhale); exhale 0.19·sin(π·(pos - exhaleStart)/exhale).
+  - sig = b2·env·1.15.
+- Heart thump: heartPos = t % 0.88; if < 0.05 add 0.035·sin(2π·65·heartPos)·exp(-55·heartPos).
+- Wheeze (exhale only): add 0.34·sin(π·exRatio)·(0.65·sin(2π·390·drift·t) + 0.35·sin(2π·780·drift·t) + 0.25·sin(2π·525·t)), with drift = 1 + 0.03·sin(2π·1.8·t).
+- Crackle (inhale only): with probability 0.0028 per sample set decay = 0.65 + range(0, 0.3); while decay > 0.005 add 0.52·decay·sin(2π·1150·t) and then decay *= 0.91.
+- Noisy: add Gaussian σ 0.26; for 2.2 < t < 5.6 add 0.85·sin(2π·145·t) + Gaussian σ 0.45; for 7.4 < t < 10.6 multiply the signal by 0.015.
+- Clamp to [-1, 1].
+- Titles: "Normal breathing (N/min)", "Wheeze sound (N/min)", "Crackle sound (N/min)", "Noisy / Bad contact (N/min)", "Your sound file", "Live Bluetooth sensor", "Live Wi-Fi stream".
+- File decode: decodeAudioData; cap at 120 s; minimum 3 s; render mono at 16 kHz with an OfflineAudioContext; estimated alternating breath spans (2.0 s step, 1.65 s long); title = file name; breathsPerMin 15; always close the AudioContext.
+
+==================== DSP (features/dsp.ts, run in a module Worker via useDspWorker) ====================
+- Worker: lazily create new Worker(new URL('./dsp.worker.ts', import.meta.url), {type:'module'}); match replies by requestId; transfer a COPY of the Float32Array buffer; fall back to the synchronous runDspPipeline if Worker creation fails or onerror fires.
+- STFT: N_FFT 512, hop 256, Hann window 0.5·(1 - cos(2πi/(N-1))), radix-2 FFT with precomputed bit-reversal and twiddles, 257 bins.
+- Mel: 64 triangular bands from 50 Hz to 8 kHz, mel = 2595·log10(1 + hz/700); log10(energy + 1e-10) per band. Keep every Nth frame so the display has <= ~600 frames (stride = ceil(totalFrames/600) when > 600); melTimesSec = frame·256/16000 (3 dp).
+- Per frame:
+  - low/mid/high band means over bands 0-20 / 21-42 / 43-63
+  - zero-crossing rate
+  - spectral centroid
+  - spectral flatness (geometric/arithmetic mean, capped at 1)
+  - 85% rolloff (default 4000 Hz)
+  - wheeze-band tonal ratio over bins 9..35 (max/avg, capped at 25, with a persistence count when > 6.5)
+- Per 3 s window (hop 1.5 s; numWindows = max(1, floor((len - 48000)/24000) + 1)):
+  - rms; clipPct = share of |x| >= 0.96 (as %).
+  - noiseFloorDb = 20·log10(p10 of the 25 ms micro-frame RMS values).
+  - Impulse rate = count(|Δx| > 5.8·σ) per second; kurtosis; dynamicRatio = p90/p10.
+  - A mid-window FFT gives tonalWheezeRatio (bins 9-35, capped at 25) and bandSnrDb = 10·log10(inBand(100-2000 Hz) / (outBand(>2500 Hz)·0.65)).
+  - contactScore = 0.92, minus:
+    - clipPct > 0.3 → min(0.45, clipPct·0.15)
+    - noiseFloorDb > -24 → min(0.45, (noiseFloorDb + 24)·0.04)
+    - rms < 0.012 → 0.48
+    - (diffEnergy/len > 0.12 and kurtosis > 12) → 0.28
+    - (dynamicRatio < 1.35 and rms > 0.08) → 0.30
+    - Clamp the result to 0.05-0.99.
+  - windowMetrics entry: {rms, clipPct, noiseFloorDb, contactScore, tonalWheezeRatio, crackleBurstDensity (= impulse rate), bandSnrDb}.
+- 21-D feature vector, exact label order: mel_low_mean, mel_mid_mean, mel_high_mean, mel_low_std, mel_mid_std, mel_high_std, spectral_centroid_hz, spectral_bandwidth_hz (= centroid·0.42), spectral_flatness, spectral_rolloff_85_hz, tonal_wheeze_ratio, wheeze_peak_persistence, crackle_kurtosis, crackle_impulse_rate, zcr_mean, zcr_std, rms_mean, rms_dynamic_range_db, band_snr_100_2000_db, inhale_exhale_ratio, contact_stability_score.
+- Return {melSpectrogram, melTimesSec, featureVector21D, windowMetrics, dspTimeMs}.
+
+==================== HB-QCSR SESSION SCORING (exact, evaluateSessionHbQcsr) ====================
+- Constants: baselineMean 0.38, baselineScale 0.24, df 6, threshold 6.5. λ = the tempering value (default 0.35).
+- Pool: VALID windows. If there are none and there are only transport-censored windows (no acquisition-censored ones), use the transport windows (the MAR rule, so Bluetooth loss never alters the score). Otherwise the pool is empty.
+- acousticMean = mean(acousticAnomalyScore over the pool), or baselineMean if the pool is empty. predictiveSurprise = logH1 - logH0 at that mean (3 dp), or 0 if the pool is empty.
+- acqFraction = acqWindows/windows; censoringEvidenceTerm = acqFraction > 0.25 ? λ·acqFraction·1.4 (3 dp) : 0.
+- srStatistic = clamp(exp(max(-1.6, 0.72·surprise + evidence)), 0.18, 18), 2 dp.
+- Status:
+  - no valid windows AND (some acquisition or transport windows) → CENSORED_TODAY
+  - sr >= 6.5 → ELEVATED
+  - sr >= 6.5·0.48 → EARLY_WATCH
+  - otherwise → STABLE
+- contributingWindows (top 6 by contribution, descending): valid = max(0, (anomaly - 0.38)·0.85); acquisition-censored = λ·0.35; transport-censored = 0. Each has {index, startSec, endSec, qualityState, contribution, reason}.
+- Do not retune any constant.
+
+==================== PIPELINE & APP STATE (App.tsx; no persistence) ====================
+- runSessionPipeline order:
+  1. bleResult = liveBleResult ?? simulateBleLink(rawSamples, bleConfig)
+  2. dsp = await runDspInWorker(rawSamples) (NOTE: DSP runs on the raw samples, not the reassembled ones)
+  3. windows = evaluateQualityGate(dsp, bleResult)
+  4. classifier = runRuleBasedClassifier(windows)
+  5. trace = evaluateSessionHbQcsr(windows, validBaselineDays, λ)
+- Result: durationSec = len/16000 (2 dp), sampleRate 16000, reassembledSamples from bleResult, isSynthetic = preset not in {custom, live-ble, live-wifi}, dataOrigin = the given value or derived (live-ble → live-bluetooth; live-wifi → live-wifi; custom → uploaded-file; else synthetic-demo).
+- It re-runs when audioSource, activePreset, breathsPerMin, bleConfig, tempering or liveCaptureMeta change. A cancel flag discards stale results. isProcessingAudio drives the processing visuals (progress sweep, LED).
+- Initial analysis placeholder: Normal 15/min; classifier 0.94 / 0.04 / 0.02 (7/7 valid); bleResult sent/received 1628, lost 0, MTU 244; trace baselineMean 0.38, scale 0.24, df 6, surprise -0.22, evidence 0, λ 0.35, SR 0.28, threshold 6.5, status STABLE; dspTimeMs 4.0; melSpectrogram [[-4 × 64]]; windows [].
+- State:
+  - activeStep 'input'; activePreset 'normal'; breathsPerMin 15; activeModal null
+  - judgeModeOpen false; hidePhone false; standalonePhone false
+  - phonePhase 'READY'; validBaselineDays 0; sessions []
+  - participantContext 'Resting · Morning'
+  - bleConfig {linkMode 'BLE', mtuBytes 244, packetLossPct 0, burstMode false, disconnectEvent false, autoSend true, seed 1}
+  - tempering 0.35; audioSource = generatePresetAudio('normal', 42, 15)
+  - liveCaptureMeta null; analysis; isProcessingAudio false; uploadError null
+- Handlers:
+  - Select preset: clear the error and live meta, set the preset, syncPending = syncImmediately && autoSend, regenerate audio at the current bpm.
+  - Change bpm: set bpm. If the preset is not custom / live-ble / live-wifi, clear live meta, set syncPending false and regenerate audio.
+  - Load wheeze sample: clear the error and live meta, preset wheeze, bpm 16, syncPending true, regenerate audio (wheeze, 42, 16).
+  - Upload file: set processing, decode and resample, then clear live meta, preset 'custom', syncPending = autoSend, set the audio source. On failure set the exact error and stop processing.
+  - Live capture complete: as described under Step 1.
+  - Change BLE config: if autoSend is on and (disconnectEvent changed, or the loss rose from <= 2 to > 2, or from < 10 to >= 10) → syncPending true. Then set the config.
+  - Manual sync: commit the current analysis to the phone.
+  - Seed demo: generate30DayDeteriorationSessions(7) → set sessions and baseline days, phase RESULT. Clear demo: sessions [], baseline 0, phase READY.
+- When a pipeline run finishes and syncPending is true, reset the flag and run commitSessionToPhone(result).
+- commitSessionToPhone:
+  1. Count valid / transport-censored / acquisition-censored windows; compute the dominant class (same rule as Step 6).
+  2. Set phase ANALYZING.
+  3. After 220 ms (clear any previous timer), append a SessionRecord:
+     - id `sess-<Date.now()>-<day>`; dayIndex = count + 1; timestampIso = now
+     - label = title; presetId; status = trace.status; srStatistic = trace.srStatistic
+     - validWindows, transportCensoredWindows, acquisitionCensoredWindows, dominantClass
+     - censoredReason only when status is CENSORED_TODAY: transport windows > 0 ? "Lost while sending (Bluetooth)" : "Bad recording"
+     - isSynthetic
+  4. If valid > 0, baseline = min(14, +1). Then set phase RESULT.
+  Clear the timer on unmount.
+
+==================== PHONE VIEW (PhoneCompanion; 3D-tilt phone frame inside the page) ====================
+- Header "Phone View" with "Standalone Tab" (external-link icon) and "Hide" (eye-off icon) buttons.
+- Phases READY → ANALYZING → RESULT, with a shimmer/scan animation during ANALYZING.
+- Status tab:
+  - Caption "6. ALERT GENERATION".
+  - Circular progress ring: grey "READY" initially; after a result it shows score/threshold clamped to 0-1, colored by status, spring-animated with a glowing dot.
+  - Headline "Ready for Recording" (or the status).
+  - Context line "Resting · Morning · Bluetooth" (participantContext + Bluetooth/Wi-Fi).
+  - "Recommendation: …" text (READY: "Start a recording in Audio Acquisition."; otherwise the Step 6 recommendation).
+  - "Why this result?" button (sliders icon) opens an on-phone explanation sheet built by buildLocal21DExplanation:
+    - Summary: "Across N clips of 3 seconds, V were good, T were lost while sending, and A were bad recordings. The alert score is X.XX and the alert level is 6.5 (Status)."
+    - Bullets:
+      - "Whistle-like tone strength is {tonal_wheeze_ratio.toFixed(2)}x normal (possible wheeze sound found | quiet breathing range)." (found when > 4.2)
+      - "Short popping sounds happened {crackle_impulse_rate.toFixed(1)} times a second (some crackle sounds found | no strong crackles found)." (found when > 5.0)
+      - "Sound clarity score is {band_snr_100_2000_db.toFixed(1)} and chest contact score is {(contact_stability_score·100).toFixed(0)}%."
+      - "How unusual today is: {predictiveSurprise.toFixed(2)}. Effect of bad recording: {censoringEvidenceTerm.toFixed(2)}."
+    - Also show the contributing-windows list, the 21-D feature vector as a labeled mini table, and a collapsible JSON trace with a Copy button: {protocol "PulmoScan-Demo-Local-Summary", note "Only summary numbers are saved. Raw sound stays on your phone.", demoData (isSynthetic), sessionTitle, status, alertScore, alertLevel, howUnusualToday, badRecordingEffect, soundType (the classifier), summaryValues (label → value map)}.
+  - "Personal Baseline Learning" card: % at the right, a thin animated bar, and mono "Personal Baseline Learning: 0 of 14 days".
+  - "Latest check" card: "None yet" with the hint 'Pick a sound on the left or tap "Load wheeze sample" to send over Bluetooth.' After a result: a status chip, the dominant class and the score.
+- Bottom tab bar: Status | History (n) | Trends | Settings (gear icon).
+  - History: newest first; each row shows day, timestamp, label, status chip, score, G/L/B counts, dominant class, censored reason and a "Demo" badge for synthetic sessions. Empty state: "No sessions yet."
+  - Trends: an animated line chart of srStatistic by dayIndex with the 6.5 threshold line and status-colored dots (hollow for Skipped today). Empty state included.
+  - Settings: participant context selects (Resting / Active × Morning / Evening), "Seed 30-day demo history", "Clear demo data".
+- Seed demo (generate30DayDeteriorationSessions; RNG seed 7·4099; base date 2026-10-24T08:00:00Z + (d-1) days; d = 1..30):
+  - Days 6 and 19 are skipped. validDays increments on non-skipped days.
+  - While validDays < 14: status CALIBRATING (CENSORED_TODAY on skipped days), SR = 0.28 + range(0, 0.25).
+  - Afterwards:
+    - skipped → CENSORED_TODAY, SR 1.1
+    - d < 21 → STABLE, SR 0.42 + range(0, 0.4)
+    - 21 <= d < 25 → EARLY_WATCH, SR 3.2 + (d-20)·0.65, dominant Wheeze
+    - d >= 25 → ELEVATED, SR 6.8 + (d-24)·1.1, dominant Wheeze
+  - Records:
+    - label "Day {d} recording"; presetId wheeze if d >= 21 else normal
+    - validWindows 1 on skipped days, else 7
+    - transportCensoredWindows 6 on day 6; acquisitionCensoredWindows 6 on day 19
+    - censoredReason: day 6 "Lost while sending over Bluetooth", day 19 "Bad recording (loose chest contact)"
+    - isSynthetic true; SR rounded to 2 dp
+  - After seeding: validBaselineDays = min(14, validDays), phase RESULT.
+- Standalone mode replaces the console with the full-width phone, the caption "Standalone phone view · Updates live with your console", and a "Load wheeze sample" button.
+
+==================== MODALS (UtilityModals) ====================
+A full-width glass sheet with an animated open/close. Header: the title at left; segmented tabs [Sensor | Self-check | Session report | Phone app | Data source] (sliding active pill, mapped to hardware | acceptance | clinical-pdf | phone-app | data-source) plus a bordered "X Close" button. Close via the button, Esc or the backdrop; focus trapped. Each opens with a muted "What is this?" line.
+
+1. Sensor ("hardware"): the card header is "The Hardware". Show the interactive 3D exploded model with the seven callouts (see MOTION & 3D), then spec cards:
+   - ESP32-S3 BLE audio sensor; MEMS microphone mounted in a 3D-printed PETG housing behind a high-tension diaphragm membrane; soft TPU contact ring (must rest flat on the skin); USB-C charging
+   - 16 kHz, 16-bit mono, 256 kbps raw
+   - BLE packet 244 B = 8 B header + 236 B audio = 118 samples = 7.375 ms
+   - 3 s windows, 50% overlap (1.5 s hop); up to 120 s per session = 79 windows
+   - 512-point FFT, 64 mel bands
+   - About 3.7 mAh and about 5.1 GFLOP per session
+   - Cost per observation $0.055 vs $11.11 for a stethoscope; device $60 vs $400
+   - Transport thresholds: 2.0% loss / 20 ms gap
+   - Wi-Fi is dev-only
+2. Self-check ("acceptance"): "What is this? Quick checks run right here in your browser to prove every tool works." Five rows (mono ID + bold title, mono detail line, animated PASS/FAIL badge), computed live by running runSessionPipeline with test configs:
+   - SC-01 "Bluetooth is the default wireless link" — "Link: Bluetooth, chunk size: 244 bytes" (PASS if the default linkMode is BLE and MTU is 244)
+   - SC-02 "All three clip states work (Good, Lost while sending, Bad recording)" — "Good=X, Lost=Y, Bad=Z". Good = valid windows of the normal preset; Lost = transport-censored windows of a 12% loss run; Bad = acquisition-censored windows of the noisy preset. PASS if all three > 0.
+   - SC-03 "Alert score stays steady when Bluetooth drops packets" — "Score at 0% loss = A vs 12% loss = B" (wheeze preset, 16/min). PASS if |A - B| <= 0.5.
+   - SC-04 "CNN Classification stays tagged cleanly for demo" — 'Tag: "CNN Classification"' (PASS if classifier.label equals that string)
+   - SC-05 "Personal Baseline Learning tracks 0 to 14 good days" — "Progress: {validBaselineDays} of 14 days" (PASS if 0 <= n <= 14)
+   Show FAIL in red with the same layout if a check fails.
+3. Session report ("clinical-pdf"): "What is this? A printable summary of this breathing session." Buttons "Print / Save PDF" (primary, printer icon, window.print()) and "Save file" (download icon; downloads a text/JSON summary). Report card:
+   - mono coral header "DEMO ONLY · NOT A MEDICAL DEVICE · NOT FOR DIAGNOSIS"
+   - title "PulmoScan AI — Session report"
+   - mono "Sound: <title> · Length: <n> s"
+   - four columns: Alert Generation "X.XX / 6.5", Phone status (trace.status), Personal Baseline Learning "N of 14 days", CNN Classification (the dominant class)
+   - footnote "Demo version. Final model runs on the phone. Clips lost while sending are ignored."
+   In print, only this card is printed on white.
+4. Phone app ("phone-app"): title "How the phone app works"; "How it works on your phone, step by step:" Six glass cards (the six steps with their one-line descriptions) joined by animated down arrows that flow in sequence.
+5. Data source ("data-source"): title "Where this web data comes from"; "Transparent breakdown of where every number and sound already shown on this web page comes from:" Four numbered rows:
+   1. "Default Sound Presets (Normal, Wheeze, Crackle, Noisy-Bad)": "Generated mathematically in your browser (not recorded from patients or pulled from an API). They combine filtered random noise with breath-cycle sine envelopes, 65 Hz heart-thump pulses, 390–780 Hz tones for wheeze, short 1150 Hz bursts for crackle, and dropout noise for Noisy-Bad."
+   2. "Sound Processing, Quality Checking & Score Math": "Computed live in your browser from whichever audio is loaded (demo sound, uploaded file, live Bluetooth, or live Wi-Fi) using a 512-point FFT, 64-band log-mel spectrum, and rule-based acoustic scoring."
+   3. "Bluetooth Packet Framing & 6-Month / 30-Day Trends": "Packet size defaults (244-byte chunks = 118 samples at 16 kHz) match the sensor specification. The 6-month chart and "Seed 30-Day Demo History" are synthetic demo trajectories generated in the browser from seeded random math—not stored database records."
+   4. "Live Sound via Bluetooth LE or Wi-Fi (Real Input)": "Use the "Connect Live Sensor (Bluetooth or Wi-Fi)" box in 1. Audio Acquisition to pair a real BLE GATT sensor (Chrome/Edge) or receive audio over a Wi-Fi WebSocket/HTTP URL. Once received, all 6 pipeline steps and the Phone View update from your real audio and measured packet loss."
+
+==================== QUICK TOUR (JudgeModeTour) ====================
+A floating glass card near the bottom center over a dimmed page, with a soft spotlight glow on the relevant area. Contents: mono "Quick tour · Step N of M", a thin animated teal progress bar, the chapter title, a one-sentence description, the mono hint "Keys: ← / → chapters · Esc exit", and buttons "Exit" (X), "Back" (←), "Next →" (primary). Keyboard: ← / → change chapter; Esc exits. Each chapter calls onNavigateChapter({step, modal?}), and App sets activeStep and activeModal (null when absent). Chapters:
+1. "1. Audio Acquisition" — "Pick a demo sound, upload your own, or pair a live Bluetooth or Wi-Fi sensor." (step input)
+2. "2. Quality Checking" — "Checks audio clarity, noise and packet loss across each 3-second clip." (quality-gate)
+3. "3. CNN Classification" — "Identifies Normal, Wheeze and Crackle sounds in the good clips." (classifier)
+4. "4. Personal Baseline Learning" — "Learns your normal pattern over 14 good days. Bluetooth link settings live here." (sync)
+5. "5. Abnormality Detection" — "Spots unusual and persistent changes against your own baseline." (detector)
+6. "6. Alert Generation" — "Shows your status and what to do next." (alert-gen)
+7. "Sensor" — "See the hardware that captures the sound." (modal hardware)
+8. "Self-check" — "Live checks prove each tool works." (modal acceptance)
+9. "Session report" — "A printable summary of this session." (modal clinical-pdf)
+10. "Data source" — "Exactly where every number comes from." (modal data-source)
+It opens from the header CTA, the toolbar button, or onOpenGuidedDemo.
+
+==================== ACCESSIBILITY, SAFETY, RESPONSIVENESS ====================
+- WCAG AA contrast on glass; visible focus rings; aria-current="step"; role="dialog" + aria-modal with focus trap on modals; role="alert" on errors. Every canvas has an aria-label and a text summary. Everything is keyboard operable. 3D and motion are decorative (aria-hidden) and honor prefers-reduced-motion.
+- Desktop-first, fully responsive down to 360 px; touch targets >= 44 px; the 3D hero degrades to a static gradient on small or low-power devices.
+- The disclaimer is visible at the top, in the footer and in the Session report. Never phrase any output as a diagnosis.
+
+==================== DELIVERABLES ====================
+A complete, runnable Vite + React + TypeScript website:
+- Strict types, no placeholder code or TODOs, deterministic simulations, a clean component structure.
+- A README with npm install and npm run dev (port 3000), the note that Web Bluetooth needs Chrome/Edge on HTTPS or http://localhost, and how to test Wi-Fi with a local WebSocket bridge.
+- A production build that passes tsc and vite build with no errors. No layout shift from the 3D canvases; the initial bundle excludes three.
+
+ACCEPTANCE CHECKLIST (verify in the browser before finishing)
+[ ] All 6 steps, the 5 modals, the Phone View (4 tabs), the Quick Tour (10 chapters) and every toolbar action work.
+[ ] Presets, file upload, live BLE and live Wi-Fi all feed the same 6-step pipeline.
+[ ] Normal preset → 7 good clips; Noisy preset → bad clips; 12% loss or a disconnect → lost clips; the alert score is unaffected by transport loss.
+[ ] Load wheeze sample syncs to the phone and the status/score update; Clear demo data resets to READY and "0 of 14 days".
+[ ] Seed 30-day demo shows Personal Baseline Learning → Stable → Early Watch → Elevated, with skipped days 6 and 19.
+[ ] The Step 5 chart's alert level reads 5.0 for all three methods, and the table values are computed from the data.
+[ ] The 3D hero reacts to the breath cycle, status and Play. The 3D sensor explodes and orbits with the 7 exact labels. Both lazy-load and fall back cleanly.
+[ ] No Android/iOS/native project exists, and nothing was added beyond the listed features.

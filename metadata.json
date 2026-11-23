@@ -1,6 +1,6 @@
 {
-  "name": "PulmoScan AI — Connected Respiratory Screening Demo",
-  "description": "Research prototype respiratory acoustic screening console and mobile companion with real-time Wi-Fi & virtual BLE synchronization.",
+  "name": "PulmoScan AI — PulmoScan breathing sound monitor",
+  "description": "Demo chest-worn respiratory acoustic sensor simulator and companion phone monitor: audio acquisition, quality checking, CNN classification, personal baseline learning, abnormality detection, and alert generation.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }
